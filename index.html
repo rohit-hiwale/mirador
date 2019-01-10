@@ -12,11 +12,24 @@
        position: fixed;
      }
     </style>
+    <script src="build/mirador/mirador.js"></script>
+    <!-- <script src="openseadragon-filtering.js"></script> -->
   </head>
   <body>
+    <div id="val-slider" style="margin: 10px" class="ui-slider ui-slider-horizontal ui-widget ui-widget-content ui-corner-all">
+      <span class="ui-slider-handle ui-state-default ui-corner-all" tabindex="0" style="left: 56.3889%;"></span>
+    </div>
+    <div id="satu-slider" style="margin: 10px" class="ui-slider ui-slider-horizontal ui-widget ui-widget-content ui-corner-all">
+      <span class="ui-slider-handle ui-state-default ui-corner-all" tabindex="0" style="left: 56.3889%;"></span>
+    </div>
     <div id="viewer"></div>
-
-    <script src="build/mirador/mirador.js"></script>
+    <script type="text/javascript">
+      window.MIN_V = 30;
+      window.MAX_V = 150;
+      window.MIN_SATU = 0;
+      window.MAX_SATU = 150;
+      window.osd_list = [];
+    </script>
     <script type="text/javascript">
 
      $(function() {

@@ -716,6 +716,408 @@
         _this.loadImage(null, imageResource);
       });
 
+
+    /** morphle edit end */
+
+    console.log("osd instance : ", _this.osd);
+    window.osd_list.push(_this.osd);
+
+
+    /**
+     * @class FilterPlugin
+     * @param {Object} options The options
+     * @param {OpenSeadragon.Viewer} options.viewer The viewer to attach this
+     * plugin to.
+     * @param {String} [options.loadMode='async'] Set to sync to have the filters
+     * applied synchronously. It will only work if the filters are all synchronous.
+     * Note that depending on how complex the filters are, it may also hang the browser.
+     * @param {Object[]} options.filters The filters to apply to the images.
+     * @param {OpenSeadragon.TiledImage[]} options.filters[x].items The tiled images
+     * on which to apply the filter.
+     * @param {function|function[]} options.filters[x].processors The processing
+     * function(s) to apply to the images. The parameters of this function are
+     * the context to modify and a callback to call upon completion.
+     */
+    $.FilterPlugin = function(options) {
+        options = options || {};
+        if (!options.viewer) {
+            throw new Error('A viewer must be specified.');
+        }
+        var self = this;
+        this.viewer = options.viewer;
+
+        this.viewer.addHandler('tile-loaded', tileLoadedHandler);
+        this.viewer.addHandler('tile-drawing', tileDrawingHandler);
+
+        // filterIncrement allows to determine whether a tile contains the
+        // latest filters results.
+        this.filterIncrement = 0;
+
+        setOptions(this, options);
+
+
+        function tileLoadedHandler(event) {
+            var processors = getFiltersProcessors(self, event.tiledImage);
+            if (processors.length === 0) {
+                return;
+            }
+            var tile = event.tile;
+            var image = event.image;
+            if (image !== null && image !== undefined) {
+                var canvas = window.document.createElement('canvas');
+                canvas.width = image.width;
+                canvas.height = image.height;
+                var context = canvas.getContext('2d');
+                context.drawImage(image, 0, 0);
+                tile._renderedContext = context;
+                var callback = event.getCompletionCallback();
+                applyFilters(context, processors, callback);
+                tile._filterIncrement = self.filterIncrement;
+            }
+        }
+
+
+        function applyFilters(context, filtersProcessors, callback) {
+            if (callback) {
+                var currentIncrement = self.filterIncrement;
+                var callbacks = [];
+                
+                /* jshint ignore:start */
+                for (i = 0; i < filtersProcessors.length - 1; i++) {
+                    (function(jj) {
+                        callbacks[jj] = function() {
+                            // If the increment has changed, stop the computation
+                            // chain immediately.
+                            if (self.filterIncrement !== currentIncrement) {
+                                return;
+                            }
+                            filtersProcessors[jj + 1](context, callbacks[jj + 1]);
+                        };
+                    })(i);
+                }
+                /* jshint ignore:end */
+
+                callbacks[filtersProcessors.length - 1] = function() {
+                    // If the increment has changed, do not call the callback.
+                    // (We don't want OSD to draw an outdated tile in the canvas).
+                    if (self.filterIncrement !== currentIncrement) {
+                        return;
+                    }
+                    callback();
+                };
+                filtersProcessors[0](context, callbacks[0]);
+            } else {
+                for (i = 0; i < filtersProcessors.length; i++) {
+                    filtersProcessors[i](context, function() {
+                    });
+                }
+            }
+        }
+
+        function tileDrawingHandler(event) {
+            var tile = event.tile;
+            var rendered = event.rendered;
+            if (rendered._filterIncrement === self.filterIncrement) {
+                return;
+            }
+            var processors = getFiltersProcessors(self, event.tiledImage);
+            if (processors.length === 0) {
+                if (rendered._originalImageData) {
+                    // Restore initial data.
+                    rendered.putImageData(rendered._originalImageData, 0, 0);
+                    delete rendered._originalImageData;
+                }
+                rendered._filterIncrement = self.filterIncrement;
+                return;
+            }
+
+            if (rendered._originalImageData) {
+                // The tile has been previously filtered (by another filter),
+                // restore it first.
+                rendered.putImageData(rendered._originalImageData, 0, 0);
+            } else {
+                rendered._originalImageData = rendered.getImageData(
+                    0, 0, rendered.canvas.width, rendered.canvas.height);
+            }
+
+            if (tile._renderedContext) {
+                if (tile._filterIncrement === self.filterIncrement) {
+                    var imgData = tile._renderedContext.getImageData(0, 0,
+                        tile._renderedContext.canvas.width,
+                        tile._renderedContext.canvas.height);
+                    rendered.putImageData(imgData, 0, 0);
+                    delete tile._renderedContext;
+                    delete tile._filterIncrement;
+                    rendered._filterIncrement = self.filterIncrement;
+                    return;
+                }
+                delete tile._renderedContext;
+                delete tile._filterIncrement;
+            }
+            applyFilters(rendered, processors);
+            rendered._filterIncrement = self.filterIncrement;
+        }
+    };
+
+    function setOptions(instance, options) {
+        options = options || {};
+        var filters = options.filters;
+        instance.filters = !filters ? [] :
+            $.isArray(filters) ? filters : [filters];
+        for (var i = 0; i < instance.filters.length; i++) {
+            var filter = instance.filters[i];
+            if (!filter.processors) {
+                throw new Error('Filter processors must be specified.');
+            }
+            filter.processors = $.isArray(filter.processors) ?
+                filter.processors : [filter.processors];
+        }
+        instance.filterIncrement++;
+
+        if (options.loadMode === 'sync') {
+            instance.viewer.forceRedraw();
+        } else {
+            var itemsToReset = [];
+            for (i = 0; i < instance.filters.length; i++) {
+                var filter1 = instance.filters[i];
+                if (!filter1.items) {
+                    itemsToReset = getAllItems(instance.viewer.world);
+                    break;
+                }
+                if ($.isArray(filter1.items)) {
+                    for (var j = 0; j < filter1.items.length; j++) {
+                        addItemToReset(filter1.items[j], itemsToReset);
+                    }
+                } else {
+                    addItemToReset(filter1.items, itemsToReset);
+                }
+            }
+            for (i = 0; i < itemsToReset.length; i++) {
+                itemsToReset[i].reset();
+            }
+        }
+    }
+
+    function addItemToReset(item, itemsToReset) {
+        if (itemsToReset.indexOf(item) >= 0) {
+            throw new Error('An item can not have filters ' +
+                'assigned multiple times.');
+        }
+        itemsToReset.push(item);
+    }
+
+    function getAllItems(world) {
+        var result = [];
+        for (var i = 0; i < world.getItemCount(); i++) {
+            result.push(world.getItemAt(i));
+        }
+        return result;
+    }
+
+    function getFiltersProcessors(instance, item) {
+        if (instance.filters.length === 0) {
+            return [];
+        }
+
+        var globalProcessors = null;
+        for (var i = 0; i < instance.filters.length; i++) {
+            var filter = instance.filters[i];
+            if (!filter.items) {
+                globalProcessors = filter.processors;
+            } else if (filter.items === item ||
+                $.isArray(filter.items) && filter.items.indexOf(item) >= 0) {
+                return filter.processors;
+            }
+        }
+        return globalProcessors ? globalProcessors : [];
+    }
+
+
+    /**
+     * Converts an RGB color value to HSV. Conversion formula
+     * adapted from http://en.wikipedia.org/wiki/HSV_color_space.
+     * Assumes r, g, and b are contained in the set [0, 255] and
+     * returns h, s, and v in the set [0, 1].
+     *
+     * @param   Number  r       The red color value
+     * @param   Number  g       The green color value
+     * @param   Number  b       The blue color value
+     * @return  Array           The HSV representation
+     */
+    var rgbToHsv = function (r, g, b) {
+      r /= 255, g /= 255, b /= 255;
+
+      var max = Math.max(r, g, b), min = Math.min(r, g, b);
+      var h, s, v = max;
+
+      var d = max - min;
+      s = max == 0 ? 0 : d / max;
+
+      if (max == min) {
+        h = 0; // achromatic
+      } else {
+        switch (max) {
+          case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+          case g: h = (b - r) / d + 2; break;
+          case b: h = (r - g) / d + 4; break;
+        }
+
+        h /= 6;
+      }
+
+      return [h * 180, s * 255, v * 255];
+    };
+
+    /**
+     * Converts an HSV color value to RGB. Conversion formula
+     * adapted from http://en.wikipedia.org/wiki/HSV_color_space.
+     * Assumes h, s, and v are contained in the set [0, 1] and
+     * returns r, g, and b in the set [0, 255].
+     *
+     * @param   Number  h       The hue
+     * @param   Number  s       The saturation
+     * @param   Number  v       The value
+     * @return  Array           The RGB representation
+     */
+    var hsvToRgb = function(h, s, v) {
+      h = h/180;
+      s = s/255;
+      v = v/255;
+      var r, g, b;
+
+      var i = Math.floor(h * 6);
+      var f = h * 6 - i;
+      var p = v * (1 - s);
+      var q = v * (1 - f * s);
+      var t = v * (1 - (1 - f) * s);
+
+      switch (i % 6) {
+        case 0: r = v, g = t, b = p; break;
+        case 1: r = q, g = v, b = p; break;
+        case 2: r = p, g = v, b = t; break;
+        case 3: r = p, g = q, b = v; break;
+        case 4: r = t, g = p, b = v; break;
+        case 5: r = v, g = p, b = q; break;
+      }
+
+      return [ r * 255, g * 255, b * 255 ];
+    };
+
+      var norm_val = function(x, max_x, min_x){
+        if(x > max_x){ // clamp
+              x = max_x;
+            }
+            if(x < min_x){ // clamp
+              x = min_x;
+            }
+            x = 255 * (x - min_x) / (max_x - min_x);
+            return x;
+      };
+
+      var hsv_filter = function() {
+          return function(context, callback) {
+              var imgData = context.getImageData(
+                  0, 0, context.canvas.width, context.canvas.height);
+              var pixels = imgData.data;
+              for (var i = 0; i < pixels.length; i += 4) {
+                  var r = pixels[i];
+                  var g = pixels[i + 1];
+                  var b = pixels[i + 2];
+                  var hsv = rgbToHsv(r, g, b);
+
+                  var h = hsv[0];
+                  var s = hsv[1];
+                  var v = hsv[2];
+                  v = norm_val(v, MAX_V, MIN_V);
+                  s = norm_val(s, MAX_SATU, MIN_SATU);
+
+                  var balanced_rgb = hsvToRgb(h,s,v);
+
+                  pixels[i] = balanced_rgb[0];
+                  pixels[i + 1] = balanced_rgb[1];
+                  pixels[i + 2] = balanced_rgb[2];
+              }
+              context.putImageData(imgData, 0, 0);
+              callback();
+          };
+      };
+
+      var balance_filter = function(threshold) {
+          if (threshold < 0 || threshold > 255) {
+              throw new Error('Threshold must be between 0 and 255.');
+          }
+          return function(context, callback) {
+              var imgData = context.getImageData(
+                  0, 0, context.canvas.width, context.canvas.height);
+              var pixels = imgData.data;
+              for (var i = 0; i < pixels.length; i += 4) {
+                  var r = pixels[i];
+                  var g = pixels[i + 1];
+                  var b = pixels[i + 2];
+                  var v = (r + g + b) / 3;
+                  pixels[i] = pixels[i + 1] = pixels[i + 2] =
+                      v < threshold ? 0 : 255;
+              }
+              context.putImageData(imgData, 0, 0);
+              callback();
+          };
+      };
+
+    _this.osd.setFilterOptions = function(options) {
+            if (!this.filterPluginInstance) {
+                options = options || {};
+                options.viewer = this;
+                this.filterPluginInstance = new $.FilterPlugin(options);
+            } else {
+                setOptions(this.filterPluginInstance, options);
+            }
+        };
+
+    _this.osd.freshFilter = function() {
+       console.log("self.filterIncrement : ", this.filterPluginInstance.filterIncrement);
+       this.filterPluginInstance.filterIncrement += 1;
+       console.log("added self.filterIncrement : ", this.filterPluginInstance.filterIncrement);
+       viewer.forceRedraw();
+   };
+
+    _this.osd.setFilterOptions({
+              filters: {
+                  // processors: OpenSeadragon.Filters.BRIGHTNESS(10)
+                  // processors: balance_filter(70)
+                  processors: hsv_filter()
+              }
+          });
+
+
+
+    // Using jQuery UI slider
+    $("#val-slider").slider({
+        min: 0,
+        max: 255,
+        slide: function(event, ui) {
+            window.MAX_V = ui.value;
+            _this.osd.freshFilter();
+        },
+        create: function(event, ui){
+            $(this).slider('value', window.MAX_V);
+        }
+    });
+
+    // Using jQuery UI slider
+    $("#satu-slider").slider({
+        min: 0,
+        max: 255,
+        slide: function(event, ui) {
+            window.MAX_SATU = ui.value;
+            _this.osd.freshFilter();
+        },
+        create: function(event, ui){
+            $(this).slider('value', window.MAX_SATU);
+        }
+    });
+
+    /** morphle edit end */
+
       _this.osd.addHandler('zoom', $.debounce(function(){
         var point = {
           'x': -10000000,

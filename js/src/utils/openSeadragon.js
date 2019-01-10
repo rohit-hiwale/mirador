@@ -15,7 +15,7 @@
       }, options)
 
     );
-    
+    console.log("new osd instance : ", osd);
     return osd;
 
   };
